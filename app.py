@@ -205,53 +205,103 @@ def get_video_info():
         logger.error(f"Error getting video info: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-@app.route('/api/download/ytdlp', methods=['GET'])
-def download_video_ytdlp():
+@app.route('/api/download/invidious', methods=['GET'])
+def download_invidious():
     url = request.args.get('url')
     
     if not url:
         return jsonify({"error": "URL parameter is required"}), 400
     
     try:
+        # Extract video ID from YouTube URL
+        if 'v=' in url:
+            video_id = url.split('v=')[1].split('&')[0]
+        elif 'youtu.be/' in url:
+            video_id = url.split('youtu.be/')[1].split('?')[0]
+        else:
+            return jsonify({"error": "Could not extract video ID from URL"}), 400
+        
+        # List of Invidious instances to try
+        invidious_instances = [
+            "https://invidious.snopyta.org",
+            "https://yewtu.be",
+            "https://invidious.kavin.rocks",
+            "https://vid.puffyan.us",
+            "https://invidious.namazso.eu"
+        ]
+        
+        import requests
+        import json
+        
+        # Try each instance until one works
+        data = None
+        working_instance = None
+        
+        for instance in invidious_instances:
+            try:
+                invidious_api_url = f"{instance}/api/v1/videos/{video_id}"
+                logger.info(f"Trying Invidious instance: {instance}")
+                
+                response = requests.get(invidious_api_url, timeout=10)
+                
+                # Check if we got a valid response
+                if response.status_code == 200:
+                    try:
+                        data = response.json()
+                        working_instance = instance
+                        logger.info(f"Successfully got data from {instance}")
+                        break
+                    except json.JSONDecodeError:
+                        logger.warning(f"Invalid JSON from {instance}")
+                        continue
+                else:
+                    logger.warning(f"Got status code {response.status_code} from {instance}")
+            except Exception as e:
+                logger.warning(f"Error with instance {instance}: {str(e)}")
+                continue
+        
+        if not data or not working_instance:
+            return jsonify({"error": "Could not get video data from any Invidious instance"}), 502
+        
+        # Get the best format
+        formats = data.get('adaptiveFormats', [])
+        if not formats:
+            return jsonify({"error": "No formats available for this video"}), 404
+        
+        # Filter for video formats (some might be audio only)
+        video_formats = [f for f in formats if f.get('type', '').startswith('video/')]
+        
+        if video_formats:
+            # Get the best video format by bitrate
+            best_format = max(video_formats, key=lambda x: x.get('bitrate', 0))
+        else:
+            # Fallback to any format if no video formats
+            best_format = max(formats, key=lambda x: x.get('bitrate', 0))
+        
         # Generate a unique filename
         filename = f"{uuid.uuid4().hex}.mp4"
         file_path = os.path.join(app.config['DOWNLOAD_FOLDER'], filename)
         
-        # Ensure cookies file exists
-        cookies_file = ensure_youtube_cookies()
+        # Download the file
+        video_url = best_format.get('url')
+        if not video_url:
+            return jsonify({"error": "Could not get video URL"}), 404
         
-        ydl_opts = {
-            'format': 'best',
-            'outtmpl': file_path,
-            'cookiefile': cookies_file,
-            'quiet': False,
-            'no_warnings': False,
-            'verbose': True,
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36',
-            'referer': 'https://www.youtube.com/',
-            'nocheckcertificate': True,
-            'ignoreerrors': False,
-            'logtostderr': False,
-            'geo_bypass': True,
-            'geo_bypass_country': 'US',
-            'extractor_args': {
-                'youtube': {
-                    'player_client': 'android',
-                    'player_skip': 'webpage',
-                    'skip': ['dash', 'hls'],
-                }
-            }
-        }
+        logger.info(f"Downloading video from URL: {video_url[:50]}...")
         
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            video_title = info.get('title', 'video')
+        with requests.get(video_url, stream=True, timeout=30) as r:
+            r.raise_for_status()
+            with open(file_path, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+        
+        logger.info(f"Download complete: {file_path}")
         
         # Return the file
-        return send_file(file_path, as_attachment=True, download_name=f"{video_title}.mp4")
+        return send_file(file_path, as_attachment=True, download_name=f"{data.get('title', 'video')}.mp4")
     
     except Exception as e:
-        logger.error(f"Error downloading video with yt-dlp: {str(e)}")
+        logger.error(f"Error downloading from Invidious: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/download/audio', methods=['GET'])

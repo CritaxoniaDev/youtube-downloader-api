@@ -199,6 +199,10 @@ def download_video_ytdlp():
         ydl_opts = {
             'format': 'best',
             'outtmpl': file_path,
+            # Add cookies file if available
+            'cookiefile': 'youtube_cookies.txt' if os.path.exists('youtube_cookies.txt') else None,
+            # Add user agent to mimic a browser
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:

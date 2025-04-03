@@ -6,6 +6,8 @@ import os
 import uuid
 import logging
 from werkzeug.exceptions import BadRequest
+from pytube import YouTube
+import browser_cookie3
 
 app = Flask(__name__)
 # Enable CORS for all routes
@@ -18,6 +20,25 @@ os.makedirs(app.config['DOWNLOAD_FOLDER'], exist_ok=True)
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Function to generate YouTube cookies file if it doesn't exist
+def ensure_youtube_cookies():
+    cookies_file = 'youtube_cookies.txt'
+    if not os.path.exists(cookies_file):
+        try:
+            logger.info("Generating YouTube cookies file...")
+            cookies = browser_cookie3.chrome(domain_name='.youtube.com')
+            with open(cookies_file, 'w') as f:
+                for cookie in cookies:
+                    if cookie.domain.endswith('.youtube.com') or cookie.domain.endswith('.google.com'):
+                        f.write(f"{cookie.domain}\tTRUE\t{cookie.path}\t{cookie.secure}\t{cookie.expires}\t{cookie.name}\t{cookie.value}\n")
+            logger.info("YouTube cookies file generated successfully")
+        except Exception as e:
+            logger.error(f"Error generating cookies file: {str(e)}")
+    return cookies_file
+
+# Generate cookies file at startup
+cookies_file = ensure_youtube_cookies()
 
 # Swagger configuration
 SWAGGER_URL = '/api/docs'  # URL for exposing Swagger UI
@@ -196,14 +217,28 @@ def download_video_ytdlp():
         filename = f"{uuid.uuid4().hex}.mp4"
         file_path = os.path.join(app.config['DOWNLOAD_FOLDER'], filename)
         
+        # Ensure cookies file exists
+        cookies_file = ensure_youtube_cookies()
+        
         ydl_opts = {
             'format': 'best',
             'outtmpl': file_path,
-            'cookiefile': 'youtube_cookies.txt',
+            'cookiefile': cookies_file,
+            'quiet': False,
+            'no_warnings': False,
+            'verbose': True,
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36',
+            'referer': 'https://www.youtube.com/',
+            'nocheckcertificate': True,
+            'ignoreerrors': False,
+            'logtostderr': False,
+            'geo_bypass': True,
+            'geo_bypass_country': 'US',
             'extractor_args': {
                 'youtube': {
                     'player_client': 'android',
                     'player_skip': 'webpage',
+                    'skip': ['dash', 'hls'],
                 }
             }
         }
@@ -227,20 +262,41 @@ def download_audio():
         return jsonify({"error": "URL parameter is required"}), 400
     
     try:
-        yt = YouTube(url)
-        
         # Generate a unique filename
         filename = f"{uuid.uuid4().hex}.mp3"
         file_path = os.path.join(app.config['DOWNLOAD_FOLDER'], filename)
         
-        # Download audio only
-        stream = yt.streams.filter(only_audio=True).first()
+        # Ensure cookies file exists
+        cookies_file = ensure_youtube_cookies()
         
-        logger.info(f"Downloading audio: {yt.title}")
-        stream.download(output_path=app.config['DOWNLOAD_FOLDER'], filename=filename)
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': file_path,
+            'cookiefile': cookies_file,
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36',
+            'referer': 'https://www.youtube.com/',
+            'nocheckcertificate': True,
+            'geo_bypass': True,
+            'geo_bypass_country': 'US',
+            'extractor_args': {
+                'youtube': {
+                    'player_client': 'android',
+                    'player_skip': 'webpage',
+                }
+            }
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            audio_title = info.get('title', 'audio')
         
         # Return the file
-        return send_file(file_path, as_attachment=True, download_name=f"{yt.title}.mp3")
+        return send_file(file_path, as_attachment=True, download_name=f"{audio_title}.mp3")
     
     except Exception as e:
         logger.error(f"Error downloading audio: {str(e)}")

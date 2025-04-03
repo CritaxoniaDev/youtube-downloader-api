@@ -6,3 +6,4 @@ flask-cors==4.0.0
 flask-swagger-ui==4.11.1
 yt-dlp==2023.11.16
 requests==2.31.0
+browser-cookie3==0.19.1

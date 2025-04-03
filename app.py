@@ -1,11 +1,15 @@
 from flask import Flask, request, jsonify, send_file
-from pytube import YouTube
+from flask_cors import CORS
+from flask_swagger_ui import get_swaggerui_blueprint
+import yt_dlp
 import os
 import uuid
 import logging
 from werkzeug.exceptions import BadRequest
 
 app = Flask(__name__)
+# Enable CORS for all routes
+CORS(app)
 app.config['DOWNLOAD_FOLDER'] = 'downloads'
 
 # Ensure download directory exists
@@ -14,6 +18,135 @@ os.makedirs(app.config['DOWNLOAD_FOLDER'], exist_ok=True)
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Swagger configuration
+SWAGGER_URL = '/api/docs'  # URL for exposing Swagger UI
+API_URL = '/static/swagger.json'  # Our API url (can of course be a local resource)
+
+# Call factory function to create our blueprint
+swaggerui_blueprint = get_swaggerui_blueprint(
+    SWAGGER_URL,  
+    API_URL,
+    config={  # Swagger UI config overrides
+        'app_name': "YouTube Downloader API"
+    }
+)
+
+# Register blueprint at URL
+app.register_blueprint(swaggerui_blueprint, url_prefix=SWAGGER_URL)
+
+# Create a static folder if it doesn't exist
+os.makedirs('static', exist_ok=True)
+
+# Create a swagger.json file with API documentation
+swagger_json = {
+    "swagger": "2.0",
+    "info": {
+        "title": "YouTube Downloader API",
+        "description": "API for downloading YouTube videos and audio",
+        "version": "1.0"
+    },
+    "basePath": "/api",
+    "schemes": [
+        "http",
+        "https"
+    ],
+    "paths": {
+        "/info": {
+            "get": {
+                "summary": "Get YouTube video information",
+                "description": "Returns information about a YouTube video",
+                "parameters": [
+                    {
+                        "name": "url",
+                        "in": "query",
+                        "description": "YouTube video URL",
+                        "required": True,
+                        "type": "string"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Video information"
+                    },
+                    "400": {
+                        "description": "Bad request"
+                    },
+                    "500": {
+                        "description": "Internal server error"
+                    }
+                }
+            }
+        },
+        "/download": {
+            "get": {
+                "summary": "Download YouTube video",
+                "description": "Downloads a YouTube video",
+                "parameters": [
+                    {
+                        "name": "url",
+                        "in": "query",
+                        "description": "YouTube video URL",
+                        "required": True,
+                        "type": "string"
+                    },
+                    {
+                        "name": "itag",
+                        "in": "query",
+                        "description": "Stream itag",
+                        "required": False,
+                        "type": "integer"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Video file"
+                    },
+                    "400": {
+                        "description": "Bad request"
+                    },
+                    "404": {
+                        "description": "Stream not found"
+                    },
+                    "500": {
+                        "description": "Internal server error"
+                    }
+                }
+            }
+        },
+        "/download/audio": {
+            "get": {
+                "summary": "Download YouTube audio",
+                "description": "Downloads audio from a YouTube video",
+                "parameters": [
+                    {
+                        "name": "url",
+                        "in": "query",
+                        "description": "YouTube video URL",
+                        "required": True,
+                        "type": "string"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Audio file"
+                    },
+                    "400": {
+                        "description": "Bad request"
+                    },
+                    "500": {
+                        "description": "Internal server error"
+                    }
+                }
+            }
+        }
+    }
+}
+
+# Write the swagger.json file
+with open('static/swagger.json', 'w') as f:
+    import json
+    json.dump(swagger_json, f)
 
 @app.route('/api/info', methods=['GET'])
 def get_video_info():
@@ -51,38 +184,32 @@ def get_video_info():
         logger.error(f"Error getting video info: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-@app.route('/api/download', methods=['GET'])
-def download_video():
+@app.route('/api/download/ytdlp', methods=['GET'])
+def download_video_ytdlp():
     url = request.args.get('url')
-    itag = request.args.get('itag')
     
     if not url:
         return jsonify({"error": "URL parameter is required"}), 400
     
     try:
-        yt = YouTube(url)
-        
         # Generate a unique filename
         filename = f"{uuid.uuid4().hex}.mp4"
         file_path = os.path.join(app.config['DOWNLOAD_FOLDER'], filename)
         
-        # Download the video
-        if itag:
-            stream = yt.streams.get_by_itag(int(itag))
-            if not stream:
-                return jsonify({"error": f"Stream with itag {itag} not found"}), 404
-        else:
-            # Default to highest resolution
-            stream = yt.streams.get_highest_resolution()
+        ydl_opts = {
+            'format': 'best',
+            'outtmpl': file_path,
+        }
         
-        logger.info(f"Downloading video: {yt.title}")
-        stream.download(output_path=app.config['DOWNLOAD_FOLDER'], filename=filename)
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            video_title = info.get('title', 'video')
         
         # Return the file
-        return send_file(file_path, as_attachment=True, download_name=f"{yt.title}.mp4")
+        return send_file(file_path, as_attachment=True, download_name=f"{video_title}.mp4")
     
     except Exception as e:
-        logger.error(f"Error downloading video: {str(e)}")
+        logger.error(f"Error downloading video with yt-dlp: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/download/audio', methods=['GET'])
@@ -120,6 +247,10 @@ def handle_bad_request(e):
 def handle_exception(e):
     logger.error(f"Unhandled exception: {str(e)}")
     return jsonify({"error": "Internal server error"}), 500
+
+@app.route('/favicon.ico')
+def favicon():
+    return "", 204  # Return no content
 
 if __name__ == '__main__':
     # Use environment variable for port with a default of 5000

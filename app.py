@@ -184,36 +184,46 @@ def get_video_info():
         logger.error(f"Error getting video info: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-@app.route('/api/download/ytdlp', methods=['GET'])
-def download_video_ytdlp():
+@app.route('/api/download/invidious', methods=['GET'])
+def download_invidious():
     url = request.args.get('url')
     
     if not url:
         return jsonify({"error": "URL parameter is required"}), 400
     
     try:
+        # Extract video ID from YouTube URL
+        video_id = url.split('v=')[1].split('&')[0]
+        
+        # Use an Invidious instance
+        invidious_instance = "https://invidious.snopyta.org"
+        invidious_api_url = f"{invidious_instance}/api/v1/videos/{video_id}"
+        
+        import requests
+        response = requests.get(invidious_api_url)
+        data = response.json()
+        
+        # Get the best format
+        formats = data.get('adaptiveFormats', [])
+        best_format = max(formats, key=lambda x: x.get('bitrate', 0))
+        
         # Generate a unique filename
         filename = f"{uuid.uuid4().hex}.mp4"
         file_path = os.path.join(app.config['DOWNLOAD_FOLDER'], filename)
         
-        ydl_opts = {
-            'format': 'best',
-            'outtmpl': file_path,
-            # Add cookies file if available
-            'cookiefile': 'youtube_cookies.txt' if os.path.exists('youtube_cookies.txt') else None,
-            # Add user agent to mimic a browser
-            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        }
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            video_title = info.get('title', 'video')
+        # Download the file
+        video_url = best_format.get('url')
+        with requests.get(video_url, stream=True) as r:
+            r.raise_for_status()
+            with open(file_path, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
         
         # Return the file
-        return send_file(file_path, as_attachment=True, download_name=f"{video_title}.mp4")
+        return send_file(file_path, as_attachment=True, download_name=f"{data.get('title')}.mp4")
     
     except Exception as e:
-        logger.error(f"Error downloading video with yt-dlp: {str(e)}")
+        logger.error(f"Error downloading from Invidious: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/download/audio', methods=['GET'])

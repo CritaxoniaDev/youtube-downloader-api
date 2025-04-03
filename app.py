@@ -193,19 +193,69 @@ def download_invidious():
     
     try:
         # Extract video ID from YouTube URL
-        video_id = url.split('v=')[1].split('&')[0]
+        if 'v=' in url:
+            video_id = url.split('v=')[1].split('&')[0]
+        elif 'youtu.be/' in url:
+            video_id = url.split('youtu.be/')[1].split('?')[0]
+        else:
+            return jsonify({"error": "Could not extract video ID from URL"}), 400
         
-        # Use an Invidious instance
-        invidious_instance = "https://invidious.snopyta.org"
-        invidious_api_url = f"{invidious_instance}/api/v1/videos/{video_id}"
+        # List of Invidious instances to try
+        invidious_instances = [
+            "https://invidious.snopyta.org",
+            "https://yewtu.be",
+            "https://invidious.kavin.rocks",
+            "https://vid.puffyan.us",
+            "https://invidious.namazso.eu"
+        ]
         
         import requests
-        response = requests.get(invidious_api_url)
-        data = response.json()
+        import json
+        
+        # Try each instance until one works
+        data = None
+        working_instance = None
+        
+        for instance in invidious_instances:
+            try:
+                invidious_api_url = f"{instance}/api/v1/videos/{video_id}"
+                logger.info(f"Trying Invidious instance: {instance}")
+                
+                response = requests.get(invidious_api_url, timeout=10)
+                
+                # Check if we got a valid response
+                if response.status_code == 200:
+                    try:
+                        data = response.json()
+                        working_instance = instance
+                        logger.info(f"Successfully got data from {instance}")
+                        break
+                    except json.JSONDecodeError:
+                        logger.warning(f"Invalid JSON from {instance}")
+                        continue
+                else:
+                    logger.warning(f"Got status code {response.status_code} from {instance}")
+            except Exception as e:
+                logger.warning(f"Error with instance {instance}: {str(e)}")
+                continue
+        
+        if not data or not working_instance:
+            return jsonify({"error": "Could not get video data from any Invidious instance"}), 502
         
         # Get the best format
         formats = data.get('adaptiveFormats', [])
-        best_format = max(formats, key=lambda x: x.get('bitrate', 0))
+        if not formats:
+            return jsonify({"error": "No formats available for this video"}), 404
+        
+        # Filter for video formats (some might be audio only)
+        video_formats = [f for f in formats if f.get('type', '').startswith('video/')]
+        
+        if video_formats:
+            # Get the best video format by bitrate
+            best_format = max(video_formats, key=lambda x: x.get('bitrate', 0))
+        else:
+            # Fallback to any format if no video formats
+            best_format = max(formats, key=lambda x: x.get('bitrate', 0))
         
         # Generate a unique filename
         filename = f"{uuid.uuid4().hex}.mp4"
@@ -213,14 +263,21 @@ def download_invidious():
         
         # Download the file
         video_url = best_format.get('url')
-        with requests.get(video_url, stream=True) as r:
+        if not video_url:
+            return jsonify({"error": "Could not get video URL"}), 404
+        
+        logger.info(f"Downloading video from URL: {video_url[:50]}...")
+        
+        with requests.get(video_url, stream=True, timeout=30) as r:
             r.raise_for_status()
             with open(file_path, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=8192):
                     f.write(chunk)
         
+        logger.info(f"Download complete: {file_path}")
+        
         # Return the file
-        return send_file(file_path, as_attachment=True, download_name=f"{data.get('title')}.mp4")
+        return send_file(file_path, as_attachment=True, download_name=f"{data.get('title', 'video')}.mp4")
     
     except Exception as e:
         logger.error(f"Error downloading from Invidious: {str(e)}")

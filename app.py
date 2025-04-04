@@ -286,14 +286,15 @@ def download_audio():
         return jsonify({"error": "URL parameter is required"}), 400
 
     try:
-        # Generate a unique filename
-        filename = f"{uuid.uuid4().hex}.%(ext)s"
-        file_path = os.path.join(app.config["DOWNLOAD_FOLDER"], filename)
+        # Generate a unique filename for both the temporary video and final mp3
+        unique_id = uuid.uuid4().hex
+        temp_video_path = os.path.join(app.config["DOWNLOAD_FOLDER"], f"{unique_id}.%(ext)s")
+        final_mp3_path = os.path.join(app.config["DOWNLOAD_FOLDER"], f"{unique_id}.mp3")
         
         # Get a random user agent
         user_agent = get_random_user_agent()
         
-        # First, get info without downloading to check formats
+        # First, just get the video info to get the title
         info_opts = {
             "quiet": True,
             "no_warnings": True,
@@ -301,108 +302,106 @@ def download_audio():
             "referer": "https://www.youtube.com/",
             "nocheckcertificate": True,
             "geo_bypass": True,
+            "skip_download": True,  # Don't download, just get info
         }
         
         # Add cookies if available
         if os.path.exists(COOKIE_FILE):
             info_opts["cookiefile"] = COOKIE_FILE
-            logger.info(f"Using cookie file: {COOKIE_FILE}")
         
-        with yt_dlp.YoutubeDL(info_opts) as ydl:
-            info_dict = ydl.extract_info(url, download=False)
-            
-            # Log available formats for debugging
-            formats = info_dict.get('formats', [])
-            audio_formats = [f for f in formats if f.get('acodec') != 'none']
-            video_formats = [f for f in formats if f.get('vcodec') != 'none']
-            
-            logger.info(f"Available audio-only formats: {len(audio_formats)}")
-            logger.info(f"Available video formats: {len(video_formats)}")
-            
-            # Get video title
-            audio_title = info_dict.get('title', 'audio')
-            
-            # Determine best approach based on available formats
-            if audio_formats:
-                # Audio formats available - use best audio
-                format_spec = "bestaudio"
-                logger.info("Using bestaudio format")
-            elif video_formats:
-                # No audio-only formats, use video format
-                format_spec = "best[height<=720]"
-                logger.info("Using video format (height<=720)")
-            else:
-                # Fallback
-                format_spec = "best"
-                logger.info("Using best format (fallback)")
+        video_title = "audio"  # Default title
+        try:
+            with yt_dlp.YoutubeDL(info_opts) as ydl:
+                info_dict = ydl.extract_info(url, download=False)
+                video_title = info_dict.get('title', 'audio')
+                logger.info(f"Video title: {video_title}")
+        except Exception as e:
+            logger.warning(f"Could not get video info: {str(e)}")
         
-        # Now download with the appropriate format
-        ydl_opts = {
-            "format": format_spec,
-            "outtmpl": file_path,
-            "quiet": False,
-            "verbose": True,
-            "no_warnings": False,
-            "user_agent": user_agent,
-            "referer": "https://www.youtube.com/",
-            "nocheckcertificate": True,
-            "geo_bypass": True,
-            "geo_bypass_country": "US",
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["android", "web"],
-                    "player_skip": ["webpage", "configs", "js"],
-                    "max_comments": [0],
-                }
-            },
-            "sleep_interval": 1,
-            "max_sleep_interval": 5,
-            "retries": 10,
-            "fragment_retries": 10,
-            "skip_unavailable_fragments": True,
-        }
+        # Now download the video using youtube-dl command line
+        # This is more reliable than using the Python API for problematic videos
+        import subprocess
+        
+        logger.info("Downloading video using yt-dlp command line...")
+        download_cmd = [
+            "yt-dlp",
+            "--no-warnings",
+            "--geo-bypass",
+            "--no-check-certificate",
+            "-f", "best",  # Use 'best' format which is usually available
+            "-o", temp_video_path,
+            url
+        ]
         
         # Add cookies if available
         if os.path.exists(COOKIE_FILE):
-            ydl_opts["cookiefile"] = COOKIE_FILE
+            download_cmd.extend(["--cookies", COOKIE_FILE])
         
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Download the file
-            info = ydl.extract_info(url, download=True)
-            downloaded_file = ydl.prepare_filename(info)
+        # Run the download command
+        try:
+            result = subprocess.run(
+                download_cmd, 
+                check=True, 
+                capture_output=True, 
+                text=True
+            )
+            logger.info("Download completed successfully")
+            logger.debug(result.stdout)
+        except subprocess.CalledProcessError as e:
+            logger.error(f"yt-dlp download failed: {str(e)}")
+            logger.error(f"Command output: {e.stdout}")
+            logger.error(f"Command error: {e.stderr}")
+            return jsonify({"error": f"Video download failed: {e.stderr}"}), 500
+        
+        # Find the downloaded file
+        downloaded_file = None
+        for file in os.listdir(app.config["DOWNLOAD_FOLDER"]):
+            if file.startswith(unique_id) and file != f"{unique_id}.mp3":
+                downloaded_file = os.path.join(app.config["DOWNLOAD_FOLDER"], file)
+                break
+        
+        if not downloaded_file:
+            logger.error("Could not find downloaded file")
+            return jsonify({"error": "Could not find downloaded file"}), 500
+        
+        logger.info(f"Downloaded file: {downloaded_file}")
+        
+        # Convert to MP3 using FFmpeg
+        try:
+            logger.info(f"Converting {downloaded_file} to {final_mp3_path}")
+            subprocess.run([
+                "ffmpeg", 
+                "-i", downloaded_file, 
+                "-vn",  # No video
+                "-ar", "44100",  # Audio sample rate
+                "-ac", "2",      # Stereo
+                "-b:a", "192k",  # Bitrate
+                "-f", "mp3",     # Format
+                final_mp3_path
+            ], check=True, capture_output=True)
             
-            # Now convert to MP3 using FFmpeg
-            mp3_file = f"{os.path.splitext(downloaded_file)[0]}.mp3"
-            
-            import subprocess
+            # Delete the original video file
             try:
-                logger.info(f"Converting {downloaded_file} to {mp3_file}")
-                subprocess.run([
-                    "ffmpeg", "-i", downloaded_file, "-vn",
-                    "-ar", "44100", "-ac", "2", "-b:a", "192k",
-                    "-f", "mp3", mp3_file
-                ], check=True, capture_output=True)
-                
-                # Delete the original file to save space
-                try:
-                    os.remove(downloaded_file)
-                    logger.info(f"Deleted original file: {downloaded_file}")
-                except Exception as e:
-                    logger.warning(f"Could not delete original file: {str(e)}")
-                
-                # Use the MP3 file for the response
-                downloaded_file = mp3_file
-                
-            except subprocess.CalledProcessError as e:
-                logger.error(f"FFmpeg conversion failed: {str(e)}")
-                logger.error(f"FFmpeg stderr: {e.stderr.decode()}")
-                return jsonify({"error": f"FFmpeg conversion failed: {str(e)}"}), 500
-
+                os.remove(downloaded_file)
+                logger.info(f"Deleted original video file: {downloaded_file}")
+            except Exception as e:
+                logger.warning(f"Could not delete original video file: {str(e)}")
+            
+        except subprocess.CalledProcessError as e:
+            logger.error(f"FFmpeg conversion failed: {str(e)}")
+            logger.error(f"FFmpeg stderr: {e.stderr.decode() if hasattr(e.stderr, 'decode') else e.stderr}")
+            return jsonify({"error": f"Audio conversion failed: {str(e)}"}), 500
+        
+        # Check if the MP3 file exists
+        if not os.path.exists(final_mp3_path):
+            logger.error(f"MP3 file not found at: {final_mp3_path}")
+            return jsonify({"error": "MP3 file not created"}), 500
+        
         # Return the MP3 file
         return send_file(
-            downloaded_file,
+            final_mp3_path,
             as_attachment=True,
-            download_name=f"{audio_title}.mp3",
+            download_name=f"{video_title}.mp3",
         )
 
     except Exception as e:

@@ -24,6 +24,17 @@ os.makedirs(app.config["DOWNLOAD_FOLDER"], exist_ok=True)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Create cookie file from environment variable if it exists
+COOKIE_FILE = os.path.join(app.config["DOWNLOAD_FOLDER"], "youtube_cookies.txt")
+cookie_content = os.environ.get("YOUTUBE_COOKIES")
+if cookie_content and not os.path.exists(COOKIE_FILE):
+    try:
+        with open(COOKIE_FILE, 'w') as f:
+            f.write(cookie_content)
+        logger.info(f"Created cookie file from environment variable: {COOKIE_FILE}")
+    except Exception as e:
+        logger.error(f"Failed to create cookie file: {str(e)}")
+
 # Load YouTube API keys from environment variables
 YOUTUBE_API_KEYS = []
 
@@ -177,6 +188,16 @@ swagger_json = {
                 },
             }
         },
+        "/check-cookies": {
+            "get": {
+                "summary": "Check YouTube cookies status",
+                "description": "Checks if YouTube cookies are available",
+                "responses": {
+                    "200": {"description": "Cookies status"},
+                    "404": {"description": "Cookies not found"},
+                },
+            }
+        },
     },
 }
 
@@ -258,6 +279,17 @@ def download_audio():
         # Get a random user agent
         user_agent = get_random_user_agent()
 
+        # Create a temporary cookie file for this request if we don't have a permanent one
+        temp_cookie_file = None
+        if not os.path.exists(COOKIE_FILE):
+            temp_cookie_file = os.path.join(app.config["DOWNLOAD_FOLDER"], f"{uuid.uuid4().hex}_cookies.txt")
+            cookie_content = os.environ.get("YOUTUBE_COOKIES")
+            
+            if cookie_content:
+                with open(temp_cookie_file, 'w') as f:
+                    f.write(cookie_content)
+                logger.info(f"Created temporary cookie file: {temp_cookie_file}")
+
         ydl_opts = {
             "format": "bestaudio/best",
             "outtmpl": file_path,
@@ -275,10 +307,17 @@ def download_audio():
             "nocheckcertificate": True,
             "geo_bypass": True,
             "geo_bypass_country": "US",
-            # Uncomment if you have cookies
-            # "cookiesfrombrowser": ("chrome", ),  # or specify browser
-            # "cookiefile": "cookies.txt",  # or specify a cookies file
         }
+        
+        # Add cookies if available
+        if os.path.exists(COOKIE_FILE):
+            ydl_opts["cookiefile"] = COOKIE_FILE
+            logger.info(f"Using cookie file: {COOKIE_FILE}")
+        elif temp_cookie_file and os.path.exists(temp_cookie_file):
+            ydl_opts["cookiefile"] = temp_cookie_file
+            logger.info(f"Using temporary cookie file: {temp_cookie_file}")
+        else:
+            logger.warning("No cookie file available")
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             # First try to get info using YouTube API to avoid bot detection
@@ -310,6 +349,13 @@ def download_audio():
             downloaded_file = ydl.prepare_filename(info).replace(
                 os.path.splitext(ydl.prepare_filename(info))[1], ".mp3"
             )
+
+        # Clean up the temporary cookie file
+        if temp_cookie_file and os.path.exists(temp_cookie_file):
+            try:
+                os.remove(temp_cookie_file)
+            except:
+                pass
 
         # Return the file with the appropriate extension
         return send_file(
@@ -343,8 +389,7 @@ def check_ffmpeg():
             "ffmpeg_available": False,
             "error": str(e)
         }), 500
-
-
+        
 @app.route("/api/api-keys")
 def api_keys_status():
     """Endpoint to check API keys status (without revealing the actual keys)"""
@@ -353,6 +398,48 @@ def api_keys_status():
         "api_keys_available": len(YOUTUBE_API_KEYS) > 0,
         "api_keys_source": "environment" if os.environ.get("YOUTUBE_API_KEY_1") or os.environ.get("YOUTUBE_API_KEYS") else "fallback"
     })
+
+
+@app.route("/api/check-cookies")
+def check_cookies():
+    """Endpoint to check if YouTube cookies are available"""
+    if os.path.exists(COOKIE_FILE):
+        try:
+            with open(COOKIE_FILE, 'r') as f:
+                first_line = f.readline().strip()
+                line_count = sum(1 for _ in f) + 1  # +1 for the first line we already read
+            
+            return jsonify({
+                "status": "success",
+                "cookies_available": True,
+                "file_path": COOKIE_FILE,
+                "file_size": os.path.getsize(COOKIE_FILE),
+                "line_count": line_count,
+                "first_line_preview": first_line[:20] + "..." if len(first_line) > 20 else first_line
+            })
+        except Exception as e:
+            return jsonify({
+                "status": "error",
+                "cookies_available": True,
+                "error": f"File exists but couldn't read it: {str(e)}"
+            }), 500
+    else:
+        # Check if we have cookies in environment variable
+        cookie_content = os.environ.get("YOUTUBE_COOKIES")
+        if cookie_content:
+            return jsonify({
+                "status": "warning",
+                "cookies_available": False,
+                "cookies_in_env": True,
+                "message": "Cookies found in environment variable but file not created yet"
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "cookies_available": False,
+                "cookies_in_env": False,
+                "error": f"Cookie file not found at {COOKIE_FILE} and no cookies in environment variable"
+            }), 404
 
 
 @app.errorhandler(BadRequest)
@@ -376,3 +463,4 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     # In production, set debug to False
     app.run(host="0.0.0.0", port=port, debug=False)
+

@@ -294,7 +294,8 @@ def download_audio():
         user_agent = get_random_user_agent()
 
         ydl_opts = {
-            "format": "bestaudio/best",
+            # Use a more flexible format specification
+            "format": "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio[ext=webm]/bestaudio/best[height<=480]",
             "outtmpl": file_path,
             "postprocessors": [
                 {
@@ -327,7 +328,7 @@ def download_audio():
             "fragment_retries": 10,
             "skip_unavailable_fragments": True,
         }
-
+        
         # Add cookies if available
         if os.path.exists(COOKIE_FILE):
             ydl_opts["cookiefile"] = COOKIE_FILE
@@ -336,14 +337,49 @@ def download_audio():
             logger.warning("No cookie file available")
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Download the audio
-            info = ydl.extract_info(url, download=True)
-            audio_title = info.get("title", "audio")
-
-            # Get the actual file path with the correct extension
-            downloaded_file = ydl.prepare_filename(info).replace(
-                os.path.splitext(ydl.prepare_filename(info))[1], ".mp3"
-            )
+            # First, get info without downloading to check formats
+            try:
+                info_dict = ydl.extract_info(url, download=False)
+                logger.info(f"Available formats: {len(info_dict.get('formats', []))}")
+                
+                # Now download the audio
+                info = ydl.extract_info(url, download=True)
+                audio_title = info.get('title', 'audio')
+                
+                # Get the actual file path with the correct extension
+                downloaded_file = ydl.prepare_filename(info).replace(
+                    os.path.splitext(ydl.prepare_filename(info))[1], ".mp3"
+                )
+                
+                # Check if file exists
+                if not os.path.exists(downloaded_file):
+                    logger.warning(f"Expected MP3 file not found at: {downloaded_file}")
+                    # Try to find the file with a different extension
+                    base_path = os.path.splitext(downloaded_file)[0]
+                    for ext in ['.mp3', '.m4a', '.webm', '.opus', '.mp4']:
+                        alt_path = f"{base_path}{ext}"
+                        if os.path.exists(alt_path):
+                            logger.info(f"Found file with different extension: {alt_path}")
+                            downloaded_file = alt_path
+                            break
+            except Exception as e:
+                # If format selection fails, try with default format
+                logger.warning(f"Error with format selection: {str(e)}")
+                ydl_opts["format"] = "best"  # Fallback to best available format
+                info = ydl.extract_info(url, download=True)
+                audio_title = info.get('title', 'audio')
+                downloaded_file = ydl.prepare_filename(info)
+                
+                # Convert to MP3 if not already
+                if not downloaded_file.endswith('.mp3'):
+                    import subprocess
+                    mp3_file = f"{os.path.splitext(downloaded_file)[0]}.mp3"
+                    subprocess.run([
+                        "ffmpeg", "-i", downloaded_file, "-vn", 
+                        "-ar", "44100", "-ac", "2", "-b:a", "192k", 
+                        mp3_file
+                    ])
+                    downloaded_file = mp3_file
 
         # Return the file with the appropriate extension
         return send_file(
@@ -355,7 +391,6 @@ def download_audio():
     except Exception as e:
         logger.error(f"Error downloading audio: {str(e)}")
         return jsonify({"error": str(e)}), 500
-
 
 @app.route("/api/check-ffmpeg")
 def check_ffmpeg():

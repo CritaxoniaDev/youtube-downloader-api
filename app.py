@@ -24,19 +24,39 @@ os.makedirs(app.config["DOWNLOAD_FOLDER"], exist_ok=True)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# YouTube API keys - rotate between these
-YOUTUBE_API_KEYS = [
-    "YOUR_API_KEY_1",
-    "YOUR_API_KEY_2",
-    "YOUR_API_KEY_3",
-    "YOUR_API_KEY_4",
-    "YOUR_API_KEY_5",
-    "YOUR_API_KEY_6",
-    "YOUR_API_KEY_7",
-    "YOUR_API_KEY_8",
-    "YOUR_API_KEY_9",
-    "YOUR_API_KEY_10",
-]
+# Load YouTube API keys from environment variables
+YOUTUBE_API_KEYS = []
+
+# Try to load from individual environment variables
+for i in range(1, 11):
+    key = os.environ.get(f"YOUTUBE_API_KEY_{i}")
+    if key and key.strip() and key != f"YOUR_API_KEY_{i}":
+        YOUTUBE_API_KEYS.append(key.strip())
+
+# Alternative: Try to load from a single comma-separated environment variable
+if not YOUTUBE_API_KEYS:
+    api_keys_str = os.environ.get("YOUTUBE_API_KEYS", "")
+    if api_keys_str:
+        YOUTUBE_API_KEYS = [key.strip() for key in api_keys_str.split(",") if key.strip()]
+
+# Fallback to hardcoded keys if no environment variables (not recommended for production)
+if not YOUTUBE_API_KEYS:
+    logger.warning("No YouTube API keys found in environment variables! Using fallback keys.")
+    YOUTUBE_API_KEYS = [
+        "YOUR_API_KEY_1",
+        "YOUR_API_KEY_2",
+        "YOUR_API_KEY_3",
+        "YOUR_API_KEY_4",
+        "YOUR_API_KEY_5",
+        "YOUR_API_KEY_6",
+        "YOUR_API_KEY_7",
+        "YOUR_API_KEY_8",
+        "YOUR_API_KEY_9",
+        "YOUR_API_KEY_10",
+    ]
+
+# Log the number of API keys loaded
+logger.info(f"Loaded {len(YOUTUBE_API_KEYS)} YouTube API keys")
 
 # List of user agents to rotate
 USER_AGENTS = [
@@ -49,6 +69,8 @@ USER_AGENTS = [
 
 # Function to get a random API key
 def get_random_api_key():
+    if not YOUTUBE_API_KEYS:
+        raise ValueError("No YouTube API keys available")
     return random.choice(YOUTUBE_API_KEYS)
 
 # Function to get a random user agent
@@ -136,13 +158,31 @@ swagger_json = {
                 },
             }
         },
+        "/check-ffmpeg": {
+            "get": {
+                "summary": "Check FFmpeg availability",
+                "description": "Checks if FFmpeg is available on the server",
+                "responses": {
+                    "200": {"description": "FFmpeg status"},
+                    "500": {"description": "Internal server error"},
+                },
+            }
+        },
+        "/api-keys": {
+            "get": {
+                "summary": "Check API keys status",
+                "description": "Returns information about loaded API keys (non-sensitive)",
+                "responses": {
+                    "200": {"description": "API keys status"},
+                },
+            }
+        },
     },
 }
 
 # Write the swagger.json file
 with open("static/swagger.json", "w") as f:
     import json
-
     json.dump(swagger_json, f)
 
 
@@ -303,6 +343,16 @@ def check_ffmpeg():
             "ffmpeg_available": False,
             "error": str(e)
         }), 500
+
+
+@app.route("/api/api-keys")
+def api_keys_status():
+    """Endpoint to check API keys status (without revealing the actual keys)"""
+    return jsonify({
+        "api_keys_count": len(YOUTUBE_API_KEYS),
+        "api_keys_available": len(YOUTUBE_API_KEYS) > 0,
+        "api_keys_source": "environment" if os.environ.get("YOUTUBE_API_KEY_1") or os.environ.get("YOUTUBE_API_KEYS") else "fallback"
+    })
 
 
 @app.errorhandler(BadRequest)

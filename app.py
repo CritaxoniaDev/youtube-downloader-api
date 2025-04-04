@@ -289,21 +289,15 @@ def download_audio():
         # Generate a unique filename
         filename = f"{uuid.uuid4().hex}.%(ext)s"
         file_path = os.path.join(app.config["DOWNLOAD_FOLDER"], filename)
-
+        
         # Get a random user agent
         user_agent = get_random_user_agent()
-
+        
+        # First download as MP4 video (more reliable)
         ydl_opts = {
-            # Use a more flexible format specification
-            "format": "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio[ext=webm]/bestaudio/best[height<=480]",
+            # Download video in MP4 format with reasonable quality
+            "format": "best[ext=mp4]/best",
             "outtmpl": file_path,
-            "postprocessors": [
-                {
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "mp3",
-                    "preferredquality": "192",
-                }
-            ],
             "quiet": False,  # Set to False to see more debug info
             "verbose": True,  # Add verbose output
             "no_warnings": False,  # Show warnings
@@ -327,6 +321,7 @@ def download_audio():
             "retries": 10,
             "fragment_retries": 10,
             "skip_unavailable_fragments": True,
+            # No postprocessors - we'll convert manually
         }
         
         # Add cookies if available
@@ -337,51 +332,55 @@ def download_audio():
             logger.warning("No cookie file available")
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # First, get info without downloading to check formats
+            # Download the video
+            info = ydl.extract_info(url, download=True)
+            audio_title = info.get('title', 'audio')
+            
+            # Get the actual file path with the correct extension
+            downloaded_file = ydl.prepare_filename(info)
+            
+            # Check if file exists
+            if not os.path.exists(downloaded_file):
+                logger.warning(f"Expected video file not found at: {downloaded_file}")
+                # Try to find the file with a different extension
+                base_path = os.path.splitext(downloaded_file)[0]
+                for ext in ['.mp4', '.webm', '.mkv', '.avi']:
+                    alt_path = f"{base_path}{ext}"
+                    if os.path.exists(alt_path):
+                        logger.info(f"Found file with different extension: {alt_path}")
+                        downloaded_file = alt_path
+                        break
+            
+            # Now convert the video to MP3 using FFmpeg
+            mp3_file = f"{os.path.splitext(downloaded_file)[0]}.mp3"
+            
+            import subprocess
             try:
-                info_dict = ydl.extract_info(url, download=False)
-                logger.info(f"Available formats: {len(info_dict.get('formats', []))}")
+                logger.info(f"Converting {downloaded_file} to {mp3_file}")
+                subprocess.run([
+                    "ffmpeg", "-i", downloaded_file, "-vn",  # -vn means no video
+                    "-ar", "44100",  # audio sampling rate
+                    "-ac", "2",      # stereo audio
+                    "-b:a", "192k",  # audio bitrate
+                    "-f", "mp3",     # force mp3 format
+                    mp3_file
+                ], check=True)
                 
-                # Now download the audio
-                info = ydl.extract_info(url, download=True)
-                audio_title = info.get('title', 'audio')
+                # Delete the original video file to save space
+                try:
+                    os.remove(downloaded_file)
+                    logger.info(f"Deleted original video file: {downloaded_file}")
+                except Exception as e:
+                    logger.warning(f"Could not delete original video file: {str(e)}")
                 
-                # Get the actual file path with the correct extension
-                downloaded_file = ydl.prepare_filename(info).replace(
-                    os.path.splitext(ydl.prepare_filename(info))[1], ".mp3"
-                )
+                # Use the MP3 file for the response
+                downloaded_file = mp3_file
                 
-                # Check if file exists
-                if not os.path.exists(downloaded_file):
-                    logger.warning(f"Expected MP3 file not found at: {downloaded_file}")
-                    # Try to find the file with a different extension
-                    base_path = os.path.splitext(downloaded_file)[0]
-                    for ext in ['.mp3', '.m4a', '.webm', '.opus', '.mp4']:
-                        alt_path = f"{base_path}{ext}"
-                        if os.path.exists(alt_path):
-                            logger.info(f"Found file with different extension: {alt_path}")
-                            downloaded_file = alt_path
-                            break
-            except Exception as e:
-                # If format selection fails, try with default format
-                logger.warning(f"Error with format selection: {str(e)}")
-                ydl_opts["format"] = "best"  # Fallback to best available format
-                info = ydl.extract_info(url, download=True)
-                audio_title = info.get('title', 'audio')
-                downloaded_file = ydl.prepare_filename(info)
-                
-                # Convert to MP3 if not already
-                if not downloaded_file.endswith('.mp3'):
-                    import subprocess
-                    mp3_file = f"{os.path.splitext(downloaded_file)[0]}.mp3"
-                    subprocess.run([
-                        "ffmpeg", "-i", downloaded_file, "-vn", 
-                        "-ar", "44100", "-ac", "2", "-b:a", "192k", 
-                        mp3_file
-                    ])
-                    downloaded_file = mp3_file
+            except subprocess.CalledProcessError as e:
+                logger.error(f"FFmpeg conversion failed: {str(e)}")
+                return jsonify({"error": f"FFmpeg conversion failed: {str(e)}"}), 500
 
-        # Return the file with the appropriate extension
+        # Return the MP3 file
         return send_file(
             downloaded_file,
             as_attachment=True,

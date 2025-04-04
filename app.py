@@ -29,7 +29,7 @@ COOKIE_FILE = os.path.join(app.config["DOWNLOAD_FOLDER"], "youtube_cookies.txt")
 cookie_content = os.environ.get("YOUTUBE_COOKIES")
 if cookie_content and not os.path.exists(COOKIE_FILE):
     try:
-        with open(COOKIE_FILE, 'w') as f:
+        with open(COOKIE_FILE, "w") as f:
             f.write(cookie_content)
         logger.info(f"Created cookie file from environment variable: {COOKIE_FILE}")
     except Exception as e:
@@ -48,11 +48,15 @@ for i in range(1, 11):
 if not YOUTUBE_API_KEYS:
     api_keys_str = os.environ.get("YOUTUBE_API_KEYS", "")
     if api_keys_str:
-        YOUTUBE_API_KEYS = [key.strip() for key in api_keys_str.split(",") if key.strip()]
+        YOUTUBE_API_KEYS = [
+            key.strip() for key in api_keys_str.split(",") if key.strip()
+        ]
 
 # Fallback to hardcoded keys if no environment variables (not recommended for production)
 if not YOUTUBE_API_KEYS:
-    logger.warning("No YouTube API keys found in environment variables! Using fallback keys.")
+    logger.warning(
+        "No YouTube API keys found in environment variables! Using fallback keys."
+    )
     YOUTUBE_API_KEYS = [
         "YOUR_API_KEY_1",
         "YOUR_API_KEY_2",
@@ -78,15 +82,18 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.159 Safari/537.36 Edg/92.0.902.84",
 ]
 
+
 # Function to get a random API key
 def get_random_api_key():
     if not YOUTUBE_API_KEYS:
         raise ValueError("No YouTube API keys available")
     return random.choice(YOUTUBE_API_KEYS)
 
+
 # Function to get a random user agent
 def get_random_user_agent():
     return random.choice(USER_AGENTS)
+
 
 # Helper function to extract video ID from URL
 def extract_video_id(url):
@@ -97,9 +104,11 @@ def extract_video_id(url):
     else:
         raise ValueError("Invalid YouTube URL")
 
+
 # Helper function to convert ISO 8601 duration to seconds
 def convert_duration(duration):
     return int(isodate.parse_duration(duration).total_seconds())
+
 
 # Swagger configuration
 SWAGGER_URL = "/api/docs"  # URL for exposing Swagger UI
@@ -204,6 +213,7 @@ swagger_json = {
 # Write the swagger.json file
 with open("static/swagger.json", "w") as f:
     import json
+
     json.dump(swagger_json, f)
 
 
@@ -222,40 +232,44 @@ def get_video_info():
     try:
         # Extract video ID from URL
         video_id = extract_video_id(url)
-        
+
         # Get a random API key
         api_key = get_random_api_key()
-        
+
         # Create YouTube API client
-        youtube = build('youtube', 'v3', developerKey=api_key)
-        
+        youtube = build("youtube", "v3", developerKey=api_key)
+
         # Get video details
-        video_response = youtube.videos().list(
-            part='snippet,contentDetails,statistics',
-            id=video_id
-        ).execute()
-        
-        if not video_response['items']:
+        video_response = (
+            youtube.videos()
+            .list(part="snippet,contentDetails,statistics", id=video_id)
+            .execute()
+        )
+
+        if not video_response["items"]:
             return jsonify({"error": "Video not found"}), 404
-            
-        video = video_response['items'][0]
-        
+
+        video = video_response["items"][0]
+
         # Format response
         video_info = {
-            "title": video['snippet']['title'],
-            "author": video['snippet']['channelTitle'],
-            "description": video['snippet']['description'],
-            "thumbnail_url": video['snippet']['thumbnails']['high']['url'],
-            "views": int(video['statistics'].get('viewCount', 0)),
-            "length_seconds": convert_duration(video['contentDetails']['duration']),
+            "title": video["snippet"]["title"],
+            "author": video["snippet"]["channelTitle"],
+            "description": video["snippet"]["description"],
+            "thumbnail_url": video["snippet"]["thumbnails"]["high"]["url"],
+            "views": int(video["statistics"].get("viewCount", 0)),
+            "length_seconds": convert_duration(video["contentDetails"]["duration"]),
         }
-        
+
         return jsonify(video_info)
-        
+
     except HttpError as e:
         if e.resp.status == 403:
             logger.error(f"YouTube API quota exceeded or API key invalid: {str(e)}")
-            return jsonify({"error": "YouTube API quota exceeded or API key invalid"}), 429
+            return (
+                jsonify({"error": "YouTube API quota exceeded or API key invalid"}),
+                429,
+            )
         else:
             logger.error(f"YouTube API error: {str(e)}")
             return jsonify({"error": str(e)}), 500
@@ -282,11 +296,13 @@ def download_audio():
         # Create a temporary cookie file for this request if we don't have a permanent one
         temp_cookie_file = None
         if not os.path.exists(COOKIE_FILE):
-            temp_cookie_file = os.path.join(app.config["DOWNLOAD_FOLDER"], f"{uuid.uuid4().hex}_cookies.txt")
+            temp_cookie_file = os.path.join(
+                app.config["DOWNLOAD_FOLDER"], f"{uuid.uuid4().hex}_cookies.txt"
+            )
             cookie_content = os.environ.get("YOUTUBE_COOKIES")
-            
+
             if cookie_content:
-                with open(temp_cookie_file, 'w') as f:
+                with open(temp_cookie_file, "w") as f:
                     f.write(cookie_content)
                 logger.info(f"Created temporary cookie file: {temp_cookie_file}")
 
@@ -307,8 +323,19 @@ def download_audio():
             "nocheckcertificate": True,
             "geo_bypass": True,
             "geo_bypass_country": "US",
+            # Add these options for better bot detection avoidance
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["android", "web"],
+                    "player_skip": ["webpage", "configs", "js"],
+                    "skip": ["hls", "dash", "translated_subs"],
+                }
+            },
+            # Add sleep between requests to avoid rate limiting
+            "sleep_interval": 5,
+            "max_sleep_interval": 10,
         }
-        
+
         # Add cookies if available
         if os.path.exists(COOKIE_FILE):
             ydl_opts["cookiefile"] = COOKIE_FILE
@@ -324,27 +351,26 @@ def download_audio():
             try:
                 video_id = extract_video_id(url)
                 api_key = get_random_api_key()
-                youtube = build('youtube', 'v3', developerKey=api_key)
-                video_response = youtube.videos().list(
-                    part='snippet',
-                    id=video_id
-                ).execute()
-                
-                if video_response['items']:
-                    video = video_response['items'][0]
-                    audio_title = video['snippet']['title']
+                youtube = build("youtube", "v3", developerKey=api_key)
+                video_response = (
+                    youtube.videos().list(part="snippet", id=video_id).execute()
+                )
+
+                if video_response["items"]:
+                    video = video_response["items"][0]
+                    audio_title = video["snippet"]["title"]
                 else:
                     # Fallback to yt-dlp for info
                     info_dict = ydl.extract_info(url, download=False)
-                    audio_title = info_dict.get('title', 'audio')
+                    audio_title = info_dict.get("title", "audio")
             except:
                 # Fallback to yt-dlp for info
                 info_dict = ydl.extract_info(url, download=False)
-                audio_title = info_dict.get('title', 'audio')
-            
+                audio_title = info_dict.get("title", "audio")
+
             # Download the audio
             info = ydl.extract_info(url, download=True)
-            
+
             # Get the actual file path with the correct extension
             downloaded_file = ydl.prepare_filename(info).replace(
                 os.path.splitext(ydl.prepare_filename(info))[1], ".mp3"
@@ -374,30 +400,39 @@ def check_ffmpeg():
     try:
         # Run ffmpeg -version command
         import subprocess
-        result = subprocess.run(["ffmpeg", "-version"], 
-                               capture_output=True, 
-                               text=True, 
-                               check=True)
-        return jsonify({
-            "status": "success",
-            "ffmpeg_available": True,
-            "version_info": result.stdout.split('\n')[0]
-        })
+
+        result = subprocess.run(
+            ["ffmpeg", "-version"], capture_output=True, text=True, check=True
+        )
+        return jsonify(
+            {
+                "status": "success",
+                "ffmpeg_available": True,
+                "version_info": result.stdout.split("\n")[0],
+            }
+        )
     except (subprocess.SubprocessError, FileNotFoundError) as e:
-        return jsonify({
-            "status": "error",
-            "ffmpeg_available": False,
-            "error": str(e)
-        }), 500
-        
+        return (
+            jsonify({"status": "error", "ffmpeg_available": False, "error": str(e)}),
+            500,
+        )
+
+
 @app.route("/api/api-keys")
 def api_keys_status():
     """Endpoint to check API keys status (without revealing the actual keys)"""
-    return jsonify({
-        "api_keys_count": len(YOUTUBE_API_KEYS),
-        "api_keys_available": len(YOUTUBE_API_KEYS) > 0,
-        "api_keys_source": "environment" if os.environ.get("YOUTUBE_API_KEY_1") or os.environ.get("YOUTUBE_API_KEYS") else "fallback"
-    })
+    return jsonify(
+        {
+            "api_keys_count": len(YOUTUBE_API_KEYS),
+            "api_keys_available": len(YOUTUBE_API_KEYS) > 0,
+            "api_keys_source": (
+                "environment"
+                if os.environ.get("YOUTUBE_API_KEY_1")
+                or os.environ.get("YOUTUBE_API_KEYS")
+                else "fallback"
+            ),
+        }
+    )
 
 
 @app.route("/api/check-cookies")
@@ -405,41 +440,59 @@ def check_cookies():
     """Endpoint to check if YouTube cookies are available"""
     if os.path.exists(COOKIE_FILE):
         try:
-            with open(COOKIE_FILE, 'r') as f:
+            with open(COOKIE_FILE, "r") as f:
                 first_line = f.readline().strip()
-                line_count = sum(1 for _ in f) + 1  # +1 for the first line we already read
-            
-            return jsonify({
-                "status": "success",
-                "cookies_available": True,
-                "file_path": COOKIE_FILE,
-                "file_size": os.path.getsize(COOKIE_FILE),
-                "line_count": line_count,
-                "first_line_preview": first_line[:20] + "..." if len(first_line) > 20 else first_line
-            })
+                line_count = (
+                    sum(1 for _ in f) + 1
+                )  # +1 for the first line we already read
+
+            return jsonify(
+                {
+                    "status": "success",
+                    "cookies_available": True,
+                    "file_path": COOKIE_FILE,
+                    "file_size": os.path.getsize(COOKIE_FILE),
+                    "line_count": line_count,
+                    "first_line_preview": (
+                        first_line[:20] + "..." if len(first_line) > 20 else first_line
+                    ),
+                }
+            )
         except Exception as e:
-            return jsonify({
-                "status": "error",
-                "cookies_available": True,
-                "error": f"File exists but couldn't read it: {str(e)}"
-            }), 500
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "cookies_available": True,
+                        "error": f"File exists but couldn't read it: {str(e)}",
+                    }
+                ),
+                500,
+            )
     else:
         # Check if we have cookies in environment variable
         cookie_content = os.environ.get("YOUTUBE_COOKIES")
         if cookie_content:
-            return jsonify({
-                "status": "warning",
-                "cookies_available": False,
-                "cookies_in_env": True,
-                "message": "Cookies found in environment variable but file not created yet"
-            })
+            return jsonify(
+                {
+                    "status": "warning",
+                    "cookies_available": False,
+                    "cookies_in_env": True,
+                    "message": "Cookies found in environment variable but file not created yet",
+                }
+            )
         else:
-            return jsonify({
-                "status": "error",
-                "cookies_available": False,
-                "cookies_in_env": False,
-                "error": f"Cookie file not found at {COOKIE_FILE} and no cookies in environment variable"
-            }), 404
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "cookies_available": False,
+                        "cookies_in_env": False,
+                        "error": f"Cookie file not found at {COOKIE_FILE} and no cookies in environment variable",
+                    }
+                ),
+                404,
+            )
 
 
 @app.errorhandler(BadRequest)
@@ -463,4 +516,3 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     # In production, set debug to False
     app.run(host="0.0.0.0", port=port, debug=False)
-

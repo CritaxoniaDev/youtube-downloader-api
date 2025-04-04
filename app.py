@@ -293,19 +293,6 @@ def download_audio():
         # Get a random user agent
         user_agent = get_random_user_agent()
 
-        # Create a temporary cookie file for this request if we don't have a permanent one
-        temp_cookie_file = None
-        if not os.path.exists(COOKIE_FILE):
-            temp_cookie_file = os.path.join(
-                app.config["DOWNLOAD_FOLDER"], f"{uuid.uuid4().hex}_cookies.txt"
-            )
-            cookie_content = os.environ.get("YOUTUBE_COOKIES")
-
-            if cookie_content:
-                with open(temp_cookie_file, "w") as f:
-                    f.write(cookie_content)
-                logger.info(f"Created temporary cookie file: {temp_cookie_file}")
-
         ydl_opts = {
             "format": "bestaudio/best",
             "outtmpl": file_path,
@@ -316,72 +303,47 @@ def download_audio():
                     "preferredquality": "192",
                 }
             ],
-            "quiet": True,
-            "no_warnings": True,
+            "quiet": False,  # Set to False to see more debug info
+            "verbose": True,  # Add verbose output
+            "no_warnings": False,  # Show warnings
             "user_agent": user_agent,
             "referer": "https://www.youtube.com/",
             "nocheckcertificate": True,
             "geo_bypass": True,
             "geo_bypass_country": "US",
-            # Add these options for better bot detection avoidance
+            # Add these options to help bypass bot detection
             "extractor_args": {
                 "youtube": {
                     "player_client": ["android", "web"],
                     "player_skip": ["webpage", "configs", "js"],
-                    "skip": ["hls", "dash", "translated_subs"],
+                    "max_comments": [0],  # Don't fetch comments
                 }
             },
-            # Add sleep between requests to avoid rate limiting
-            "sleep_interval": 5,
-            "max_sleep_interval": 10,
+            # Add sleep between requests
+            "sleep_interval": 1,
+            "max_sleep_interval": 5,
+            # Add retries
+            "retries": 10,
+            "fragment_retries": 10,
+            "skip_unavailable_fragments": True,
         }
 
         # Add cookies if available
         if os.path.exists(COOKIE_FILE):
             ydl_opts["cookiefile"] = COOKIE_FILE
             logger.info(f"Using cookie file: {COOKIE_FILE}")
-        elif temp_cookie_file and os.path.exists(temp_cookie_file):
-            ydl_opts["cookiefile"] = temp_cookie_file
-            logger.info(f"Using temporary cookie file: {temp_cookie_file}")
         else:
             logger.warning("No cookie file available")
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # First try to get info using YouTube API to avoid bot detection
-            try:
-                video_id = extract_video_id(url)
-                api_key = get_random_api_key()
-                youtube = build("youtube", "v3", developerKey=api_key)
-                video_response = (
-                    youtube.videos().list(part="snippet", id=video_id).execute()
-                )
-
-                if video_response["items"]:
-                    video = video_response["items"][0]
-                    audio_title = video["snippet"]["title"]
-                else:
-                    # Fallback to yt-dlp for info
-                    info_dict = ydl.extract_info(url, download=False)
-                    audio_title = info_dict.get("title", "audio")
-            except:
-                # Fallback to yt-dlp for info
-                info_dict = ydl.extract_info(url, download=False)
-                audio_title = info_dict.get("title", "audio")
-
             # Download the audio
             info = ydl.extract_info(url, download=True)
+            audio_title = info.get("title", "audio")
 
             # Get the actual file path with the correct extension
             downloaded_file = ydl.prepare_filename(info).replace(
                 os.path.splitext(ydl.prepare_filename(info))[1], ".mp3"
             )
-
-        # Clean up the temporary cookie file
-        if temp_cookie_file and os.path.exists(temp_cookie_file):
-            try:
-                os.remove(temp_cookie_file)
-            except:
-                pass
 
         # Return the file with the appropriate extension
         return send_file(
